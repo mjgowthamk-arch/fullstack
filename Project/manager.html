@@ -242,7 +242,7 @@ async function loadData() {
     if (res.status === 401 || res.status === 403) return logout();
     
     const interns = await res.json();
-    const assignedInterns = interns.filter(i => i.manager.trim().toLowerCase() === user.selectedRole.trim().toLowerCase());
+    const assignedInterns = interns.filter(i => i.manager.trim().toLowerCase() === user.exactRole.trim().toLowerCase());
     
     document.getElementById('assignedCount').innerText = assignedInterns.length;
 

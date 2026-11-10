@@ -322,4 +322,5 @@ app.put('/api/tasks/:id/status', authToken, async(req,res)=>{
 
 // 17. Start the server using app.listen on process.env.PORT
 
-app.listen(3000, ()=> console.log('Server running on port 3000'))
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, ()=> console.log(`Server running on port ${PORT}`));
