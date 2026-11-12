@@ -212,15 +212,11 @@ app.post('/api/interns', authToken, async (req,res)=>{
         await client.query('BEGIN');
 
         const result = await client.query("INSERT INTO users (name, email, password, role) VALUES ($1, $2, $3, 'intern') RETURNING user_id", [name, email, hashPass]);
-
         const newUserId = result.rows[0].user_id;
-
         const findManager = await client.query('SELECT user_id FROM users WHERE name=$1 AND role=$2', [manager, 'manager']);
-
         const managerId = findManager.rows[0].user_id;
 
         await client.query("INSERT INTO interns (intern_id, designation, manager_id) VALUES ($1, $2, $3)", [newUserId, role, managerId]);
-        
         await client.query('COMMIT');
         
         res.status(201).json({ message: 'Intern created successfully' });

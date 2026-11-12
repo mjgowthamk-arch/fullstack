@@ -1,0 +1,12 @@
+{
+  "development": {
+    "appName": "Intern Management System (Dev)",
+    "port": 3000,
+    "enableLogging": true
+  },
+  "production": {
+    "appName": "Intern Management System",
+    "port": 8080,
+    "enableLogging": false
+  }
+}
