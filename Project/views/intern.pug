@@ -1,0 +1,166 @@
+doctype html
+html(lang="en")
+  head
+    meta(charset="UTF-8")
+    meta(name="viewport" content="width=device-width, initial-scale=1.0")
+    title Student Dashboard
+    link(rel="stylesheet" href="/toast.css")
+    script(src="/toast.js")
+
+    // 1. ADDED CDNs (Content Delivery Network): jQuery, DataTables, and Viewer.js
+    script(src="https://code.jquery.com/jquery-3.7.1.min.js")
+    link(rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css")
+    script(src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js")
+    
+    link(rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.css")
+    script(src="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.js")
+
+    style.
+      * { font-family: Arial, Helvetica, sans-serif; box-sizing: border-box; }
+      body { background-color: lightgray; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; overflow: hidden; }
+      .wrapper { display: flex; width: 100%; height: 100vh; }
+      .container { padding: 30px; background-color: #f8fafc; border: 2px solid #e2e8f0; border-radius: 5px; }
+      .intern-profile { flex: 1; border-right: 2px solid #e2e8f0; background-color: white; padding: 30px; display: flex; flex-direction: column; justify-content: space-between; }
+      .intern-profile h1 { color: darkblue; margin: 0 0 5px 0; font-size: 30px; }
+      .intern-profile h2 { color: darkblue; margin: 0 0 20px 0; font-size: 20px; }
+      .info-card { background-color: white; border: 2px solid #e2e8f0; padding: 15px; margin-bottom: 12px; }
+      .info-label { font-weight: bold; font-size: 15px; text-transform: uppercase; margin-bottom: 4px; }
+      .info-value { font-size: 15px; font-weight: bold; color: darkgreen; }
+      .logout-btn { align-self: flex-start; background: red; color: white; font-weight: bold; margin-top: 20px; border: none; padding:5px 8px; border-radius:3px; cursor:pointer; }
+      .logout-btn:hover { background: #772020; transition: all 0.5s ease; }
+      .intern-task { flex: 2; background-color: white; padding: 30px; display: flex; flex-direction: column; }
+      .intern-task h1 { color: darkblue; margin: 0 0 15px 0; font-size: 28px; }
+      .table-container { overflow-y: auto; flex: 1; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 12px; text-align: left; border: 2px solid black; font-size: 15px; }
+      th { background-color: gainsboro; }
+      .profile-image { cursor: pointer; border-radius: 50%; width: 80px; height: 80px; object-fit: cover; margin-bottom: 15px; border: 3px solid #1e3a8a; }
+
+  body
+    .wrapper
+      .intern-profile
+        .container
+          h1 Student Dashboard
+          
+          // 2. ADDED: Profile Image for Viewer.js demonstration
+          img#profilePic.profile-image(src="https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=150&q=80" alt="Profile Picture" title="Click to view full screen")
+          
+          h2#welcomeText Welcome!
+          .info-card
+            .info-label Assigned Role
+            .info-value#roleValue -
+          .info-card
+            .info-label Assigned Manager
+            .info-value#managerValue -
+          .info-card
+            .info-label Average Performance
+            .info-value#avgRating -
+            
+        button.logout-btn(type="button" onclick="logout();") Logout
+
+      .intern-task
+        h1 My Assigned Tasks & Scores
+        .table-container
+          table#performance-table.display(style="width:100%")
+
+    script.
+      $(document).ready(function() {
+          const user = JSON.parse(localStorage.getItem('currentUser'));
+          if (!user || user.role !== 'intern') {
+              alert('Access Denied! Please log in first.');
+              window.location.href = '/';
+          }
+
+          // 3. INITIALIZE VIEWER.JS
+          new Viewer(document.getElementById('profilePic'), {
+              toolbar: { zoomIn: 4, zoomOut: 4, oneToOne: 4, reset: 4, prev: 0, play: 0, next: 0, rotateLeft: 4, rotateRight: 4, flipHorizontal: 4, flipVertical: 4 }
+          });
+
+          loadStudentData();
+      });
+
+      async function logout() {
+          try {
+              await $.post('/logout'); 
+          } catch (err) {
+              console.log("Error logging out");
+          }
+          localStorage.removeItem('currentUser');
+          window.location.href = '/';
+      }
+
+      async function loadStudentData() {
+          const user = JSON.parse(localStorage.getItem('currentUser'));
+          try {
+              const interns = await $.ajax({ url: '/api/interns', method: 'GET' });
+              const student = interns.find(i => i.email.toLowerCase() === user.email.toLowerCase());
+
+              if (!student) {
+                  alert('Student record not found!');
+                  return logout();
+              }
+
+              $('#welcomeText').text(`Welcome ${student.name}!`);
+              $('#roleValue').text(student.role);
+              $('#managerValue').text(student.manager);
+
+              const gradedScores = student.tasks.filter(t => t.score !== '-' && !isNaN(t.score)).map(t => Number(t.score));
+              if (gradedScores.length > 0) {
+                  const sum = gradedScores.reduce((a, b) => a + b, 0);
+                  $('#avgRating').text(`${(sum / gradedScores.length).toFixed(1)} / 100 (Tasks Completed: ${gradedScores.length})`);
+              }
+
+              // Initialize DataTables
+              const $table = $('#performance-table');
+              if ($.fn.DataTable.isDataTable('#performance-table')) {
+                  $table.DataTable().clear().destroy();
+              }
+              $table.empty();
+              $table.append(`
+                  <thead><tr><th>Task Assigned</th><th>Status</th><th>Score</th><th>Feedback</th></tr></thead>
+                  <tbody></tbody>
+              `);
+
+              if (student.tasks.length === 0) {
+                  $table.find('tbody').append('<tr><td colspan="4" style="text-align:center;">No tasks assigned yet.</td></tr>');
+              } else {
+                  student.tasks.forEach(task => {
+                      let scoreColor = task.score >= 80 ? 'green' : (task.score >= 50 ? 'orange' : (task.score !== '-' ? 'red' : ''));
+                      
+                      $table.find('tbody').append(`
+                          <tr>
+                              <td>${task.title}</td>
+                              <td>
+                                  <select onchange="updateTaskStatus(${task.id}, this.value)" style="padding: 4px 8px; border-radius: 4px;">
+                                      <option value='Pending' ${task.status === 'Pending' ? 'selected' : ''}>Pending</option>
+                                      <option value='In Progress' ${task.status === 'In Progress' ? 'selected' : ''}>In Progress</option>
+                                      <option value='Completed' ${task.status === 'Completed' ? 'selected' : ''}>Completed</option>
+                                  </select>
+                              </td>
+                              <td style="color: ${scoreColor}; font-weight: bold;">${task.score !== '-' ? task.score + '/100' : '-'}</td>
+                              <td>${task.feedback || '-'}</td>
+                          </tr>
+                      `);
+                  });
+              }
+
+              $table.DataTable({ pageLength: 5, lengthMenu: [5, 10, 20], searching: false });
+
+          } catch (err) {
+              if (err.status === 401 || err.status === 403) return logout();
+          }
+      }
+
+      async function updateTaskStatus(taskId, newStatus) {
+          try {
+              await $.ajax({
+                  url: `/api/tasks/${taskId}/status`,
+                  method: 'PUT',
+                  contentType: 'application/json',
+                  data: JSON.stringify({ status: newStatus })
+              });
+              showToast(`Status updated to "${newStatus}"!`);
+          } catch (err) {
+              showToast("Error updating status.", "error");
+          }
+      }
