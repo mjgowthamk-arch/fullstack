@@ -15,7 +15,7 @@ const bodyParser = require('body-parser');
 const compression = require('compression');
 const { v4: uuidv4 } = require('uuid');
 const helmet = require('helmet');
-const rateLimit = require("express-rate-limit");
+const { rateLimit, ipKeyGenerator } = require("express-rate-limit");
 
 const xlsx = require('xlsx');
 const nodemailer = require('nodemailer');
@@ -34,6 +34,7 @@ const redis = require('redis'); // Remote Dictionary Server
 
 // 1. Initialize Redis Client
 const redisClient = redis.createClient({ url: 'redis://127.0.0.1:6379' });
+
 redisClient.connect().catch(console.error);
 
 const amqp = require('amqplib'); // Advanced Message Queuing Protocol Library
@@ -46,7 +47,12 @@ async function connectRabbitMQ() {
     await channel.assertQueue('email_tasks');
     console.log("RabbitMQ connected and queue created.");
 }
-connectRabbitMQ();
+
+connectRabbitMQ().catch(err => {
+    console.error("Failed to connect to RabbitMQ on startup:", err.message);
+});
+
+const crypto = require('crypto'); 
 
 const { 
     loginSchema, 
@@ -54,8 +60,10 @@ const {
     assignTaskSchema, 
     updateScoreSchema, 
     updateStatusSchema, 
+    forgotPasswordSchema, 
+    resetPasswordSchema, 
     validateRequest 
-} = require('./validators');
+} = require('./public/validator');
 
 // Imported custom configurations 
 const requestMonitor = require("./lib/request-monitor.js");
@@ -124,8 +132,8 @@ app.use(morgan('dev'));
 app.use(cookieParser());
 
 // Replaced app.use(express.json()) with explicit Body Parser config
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json({ limit: '5mb' }));
+app.use(bodyParser.urlencoded({ limit: '5mb', extended: true }));
 
 // Configured CORS to accept cookies from the frontend
 app.use(cors({
@@ -135,10 +143,16 @@ app.use(cors({
 
 // Express Rate Limit prevents brute-force / DDoS attacks
 const limiter = rateLimit({
-    windowMs: 3 * 60 * 1000, // 3 minutes
-    max: 3,                   // Limit
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 20,                 // Limit
+    
+    keyGenerator: (req, res) => {
+        // Track by the email they typed, fall back to IP
+        return req.body.email || ipKeyGenerator(req, res);
+    },
+
     handler: (req, res) => {
-        res.status(429).json({ message: "Too many requests from this IP, please try again after 15 minutes" }); // 429 Too Many Requests
+        res.status(429).json({ message: "Too many requests from this IP, please try again after 10 minutes" }); // 429 Too Many Requests
     }
 });
 
@@ -172,7 +186,8 @@ const User = sequelize.define('User', {
     name: { type: DataTypes.STRING, allowNull: false },
     email: { type: DataTypes.STRING, unique: true, allowNull: false },
     password: { type: DataTypes.STRING, allowNull: false },
-    role: { type: DataTypes.STRING, allowNull: false }
+    role: { type: DataTypes.STRING, allowNull: false },
+    profile_pic: { type: DataTypes.TEXT, allowNull: true }
 }, { tableName: 'users', timestamps: false });
 
 const Intern = sequelize.define('Intern', {
@@ -188,7 +203,8 @@ const Task = sequelize.define('Task', {
     status: { type: DataTypes.STRING, defaultValue: 'Pending' },
     score: { type: DataTypes.INTEGER, allowNull: true },
     feedback: { type: DataTypes.TEXT, allowNull: true },
-    assigned_date: { type: DataTypes.DATE, defaultValue: Sequelize.NOW }
+    assigned_date: { type: DataTypes.DATE, defaultValue: Sequelize.NOW },
+    deadline: { type: DataTypes.DATE, allowNull: true }
 }, { tableName: 'tasks', timestamps: false });
 
 // 4. DEFINE ASSOCIATIONS (Relationships / Joins)
@@ -218,19 +234,24 @@ function authToken(req, res, next) {
     });
 }
 
-// DB SEED ROUTE
 app.get('/seed', async (req, res) => {
     try {
-        const hashedPass = await bcrypt.hash('123', 10);
-        await User.destroy({ truncate: true, cascade: true });
+        // 1. The Nuclear Option: Drops ALL tables and rebuilds them completely empty
+        await sequelize.sync({ force: true });
         
+        const hashedPass = await bcrypt.hash('123', 10);
+        
+        // 2. Insert the fresh default users into the clean database
         await User.bulkCreate([
             { name: 'HR Admin', email: 'admin', password: hashedPass, role: 'admin' },
             { name: 'Manager 1', email: 'manager1', password: hashedPass, role: 'manager' },
             { name: 'Manager 2', email: 'manager2', password: hashedPass, role: 'manager' }
         ]);
 
-        res.status(200).json({ message: 'Database seeded successfully!' });
+        // 3. Flush the entire Redis memory so the frontend doesn't show old cache
+        await redisClient.flushAll();
+
+        res.status(200).json({ message: 'Database completely reset and seeded successfully!' });
     } catch (err) {
         console.log(err.stack);
         res.status(500).json({ message: 'Internal server error' });
@@ -241,8 +262,8 @@ app.get('/seed', async (req, res) => {
 app.post('/login', limiter, validateRequest(loginSchema), async (req, res) => {
     try {
         const { email, password, role } = req.body;
-        
-        const user = await User.findOne({ where: { email, role } });
+        const roleCondition = role === 'intern' ? ['intern', 'Trainee'] : role;
+        const user = await User.findOne({ where: { email, role: roleCondition } });
 
         if (!user) return res.status(401).json({ message: 'Invalid credentials' });
 
@@ -251,7 +272,7 @@ app.post('/login', limiter, validateRequest(loginSchema), async (req, res) => {
 
         const userData = user.toJSON(); 
 
-        if (userData.role === 'intern') {
+        if (userData.role === 'intern' || userData.role === 'Trainee') {
             const internDetails = await Intern.findOne({ where: { intern_id: userData.user_id } });
             userData.designation = internDetails ? internDetails.designation : '';
         }
@@ -296,7 +317,7 @@ app.get('/api/interns', authToken, async (req, res) => {
         
         // 3. If no cache, query PostgreSQL as usual
         const internsData = await User.findAll({
-            where: { role: 'intern' },
+            where: { role: ['intern', 'Trainee'] },
             include: [
                 {
                     model: Intern,
@@ -312,10 +333,12 @@ app.get('/api/interns', authToken, async (req, res) => {
 
         const formattedData = internsData.map((u) => {
             return {
+                user_id: u.user_id,
                 name: u.name,
                 email: u.email,
                 role: u.Intern.designation,
                 manager: u.Intern.Manager.name,
+                profile_pic: u.profile_pic || '',
                 tasks: u.Tasks.map(t => {
                     return {
                         id: t.task_id,
@@ -323,7 +346,8 @@ app.get('/api/interns', authToken, async (req, res) => {
                         status: t.status,
                         score: t.score === null ? '-' : t.score,
                         feedback: t.feedback || '',
-                        assignedDate: new Date(t.assigned_date).toLocaleDateString('en-GB')
+                        assignedDate: new Date(t.assigned_date).toLocaleDateString('en-GB'),
+                        deadline: t.deadline ? new Date(t.deadline).toLocaleDateString('en-GB') : 'No Deadline'
                     };
                 })
             };
@@ -340,6 +364,8 @@ app.get('/api/interns', authToken, async (req, res) => {
     }
 });
 
+/*
+
 app.get('/api/users/:id', authToken, async (req, res) => {
     try {
         const user = await User.findByPk(req.params.id);
@@ -350,23 +376,6 @@ app.get('/api/users/:id', authToken, async (req, res) => {
     }
 });
 
-/*
-app.put('/api/interns/:id/promote', authToken, async (req, res) => {
-    try {
-        const user = await User.findByPk(req.params.id);
-        if (!user) return res.status(404).json({ error: "User not found" });
-
-        const tasks = await user.getTasks(); 
-        user.role = 'employee'; 
-        await user.save(); 
-
-        await redisClient.del('all_interns_data');
-        
-        res.json({ message: "Intern successfully promoted!", updatedUser: user, assignedTasks: tasks });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
 */
 
 // 3. ADMIN ENDPOINTS (Protected)
@@ -416,54 +425,27 @@ app.delete('/api/interns/:email', authToken, async (req, res) => {
     }
 });
 
-/*
-app.post('/api/tasks', authToken, async (req, res) => {
-    try {
-        const { internEmail, title } = req.body;
-        
-        const user = await User.findOne({ where: { email: internEmail } });
-        if (!user) return res.status(404).json({ message: "Intern not found" });
-
-        // Save to DB
-        await Task.create({ intern_id: user.user_id, title });
-        
-        await redisClient.del('all_interns_data');
-        
-        // 3. Send the notification email
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: internEmail,
-            subject: 'New Task Assigned: KTT Intern Portal',
-            html: `<h3>Hello ${user.name},</h3>
-                   <p>Your manager has assigned you a new task:</p>
-                   <p><strong>${title}</strong></p>
-                   <p>Please log in to your dashboard to update your progress.</p>`
-        };
-
-        // We use .sendMail() but don't await it so the frontend doesn't freeze waiting for the email to send
-        transporter.sendMail(mailOptions).catch(err => console.log('Email failed:', err));
-
-        res.status(201).json({ message: 'Task assigned and intern notified' });
-    } catch (err) {
-        res.status(500).json({ message: "Internal server error" });
-    }
-});
-*/
-
 // 4. MANAGER & TASK ENDPOINTS (Protected)
-
 app.post('/api/tasks', authToken, validateRequest(assignTaskSchema), async (req, res) => {
     try {
-        const { internEmail, title } = req.body;
+        const { internEmail, title, deadline } = req.body;
         
         const user = await User.findOne({ where: { email: internEmail } });
         if (!user) return res.status(404).json({ message: "Intern not found" });
 
-        await Task.create({ intern_id: user.user_id, title });
+        const taskDeadline = deadline ? deadline : null;
+
+        // Save to DB
+        await Task.create({ 
+            intern_id: user.user_id, 
+            title, 
+            deadline: taskDeadline 
+        });
+
         await redisClient.del('all_interns_data'); // Clear cache
 
-        // 2. Drop the email job into RabbitMQ instead of sending it here!
-        const emailJob = { email: internEmail, name: user.name, title: title };
+        // Drop the email job into RabbitMQ instead of sending it here!
+        const emailJob = { type: 'task_assigned', email: internEmail, name: user.name, title: title };
         channel.sendToQueue('email_tasks', Buffer.from(JSON.stringify(emailJob)));
 
         // Respond instantly instead of waiting for the SMTP server
@@ -473,30 +455,73 @@ app.post('/api/tasks', authToken, validateRequest(assignTaskSchema), async (req,
     }
 });
 
-
-// 3. The Worker: Listens to the queue continuously and sends emails
+// The Worker: Listens to the queue continuously and sends emails
 async function startEmailWorker() {
     // Wait a few seconds for the RabbitMQ connection to establish
     setTimeout(() => {
         channel.consume('email_tasks', async (msg) => {
             if (msg !== null) {
                 const jobData = JSON.parse(msg.content.toString());
+
+                console.log("DEBUG: Worker received job data:", jobData); //
                 
+                let subject = '';
+                let htmlContent = '';
+
+                // 1. Dynamically choose the email template based on 'type'
+                switch (jobData.type) {
+                    case 'task_assigned':
+                        subject = 'New Task Assigned: KTT Intern Portal';
+                        htmlContent = `
+                            <h3>Hello ${jobData.name},</h3>
+                            <p>Your manager has assigned you a new task:</p>
+                            <p><strong>${jobData.title}</strong></p>
+                            <p>Please log in to your dashboard to update your progress.</p>
+                        `;
+                        break;
+
+                    case 'password_reset':
+                        subject = 'Password Reset OTP - KTT Intern Portal';
+                        htmlContent = `
+                            <h3>Hello ${jobData.name},</h3>
+                            <p>Your password reset OTP is: <strong>${jobData.otp}</strong></p>
+                            <p>This code will expire in 5 minutes. If you did not request this, please ignore this email.</p>
+                        `;
+                        break;
+
+                    case 'daily_reminder':
+                        subject = 'Action Required: Pending Task Reminder';
+                        htmlContent = `
+                            <h3>Hello ${jobData.name},</h3>
+                            <p>This is a reminder that you have a pending task:</p>
+                            <p><strong>${jobData.title}</strong></p>
+                        `;
+                        break;
+
+                    default:
+                        console.log("Unknown email type received:", jobData.type);
+                        channel.ack(msg); // Acknowledge so it doesn't get stuck in the queue forever
+                        return;
+                }
+
                 const mailOptions = {
                     from: process.env.EMAIL_USER,
                     to: jobData.email,
-                    subject: 'New Task Assigned',
-                    html: `<h3>Hello ${jobData.name},</h3><p>New Task: ${jobData.title}</p>`
+                    subject: subject,
+                    html: htmlContent
                 };
 
                 try {
                     await transporter.sendMail(mailOptions); // Wait for Nodemailer here
-                    console.log(`Email successfully sent to ${jobData.email} via RabbitMQ Worker!`);
+                    console.log(`[${jobData.type}] Email successfully sent to ${jobData.email} via RabbitMQ Worker!`);
                     
                     // Tell RabbitMQ we finished the job so it can remove it from the queue
                     channel.ack(msg); 
                 } catch (error) {
-                    console.log("Worker failed to send email", error);
+                    console.log("Worker failed to send email", error.message);
+                    // Explicitly reject and discard the message 
+                    // This stops bad data (like 'manager1') from looping or freezing your queue
+                    channel.nack(msg, false, false); 
                 }
             }
         });
@@ -509,7 +534,6 @@ schedule.scheduleJob('0 9 * * *', async () => {
     console.log('Running daily automated task reminder check...');
 
     try {
-        // 1. Find all pending tasks and include the User data to get their email
         const pendingTasks = await Task.findAll({
             where: { status: 'Pending' },
             include: [{ model: User, attributes: ['name', 'email'] }]
@@ -519,7 +543,7 @@ schedule.scheduleJob('0 9 * * *', async () => {
             return console.log('No pending tasks found today.');
         }
 
-        // 2. Loop through pending tasks and send reminder emails
+        /*
         for (const task of pendingTasks) {
             const mailOptions = {
                 from: process.env.EMAIL_USER,
@@ -540,7 +564,19 @@ schedule.scheduleJob('0 9 * * *', async () => {
             }
         }
         
-        console.log(`Finished processing ${pendingTasks.length} reminder emails.`);
+        console.log(`Finished processing ${pendingTasks.length} reminder emails.`); */
+
+        // 2. Loop through pending tasks and send reminder emails
+        for (const task of pendingTasks) {
+            const emailJob = { 
+                type: 'daily_reminder',
+                email: task.User.email, 
+                name: task.User.name, 
+                title: task.title 
+            };
+            channel.sendToQueue('email_tasks', Buffer.from(JSON.stringify(emailJob)));
+        }
+        console.log(`Queued ${pendingTasks.length} reminder emails to RabbitMQ.`);
 
     } catch (err) {
         console.error('Error running daily cron job:', err);
@@ -565,18 +601,6 @@ app.put('/api/tasks/:id/score', authToken, validateRequest(updateScoreSchema), a
     }
 });
 
-app.delete('/api/tasks/:id', authToken, async (req, res) => {
-    try {
-        await Task.destroy({ where: { task_id: req.params.id } });
-
-        await redisClient.del('all_interns_data');
-
-        res.status(200).json({ message: 'Task Deleted' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
 app.put('/api/tasks/:id/status', authToken, validateRequest(updateStatusSchema), async (req, res) => {
     try {
         await Task.update(
@@ -592,11 +616,23 @@ app.put('/api/tasks/:id/status', authToken, validateRequest(updateStatusSchema),
     }
 });
 
+app.delete('/api/tasks/:id', authToken, async (req, res) => {
+    try {
+        await Task.destroy({ where: { task_id: req.params.id } });
+
+        await redisClient.del('all_interns_data');
+
+        res.status(200).json({ message: 'Task Deleted' });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/export/interns', authToken, async (req, res) => {
     try {
         // 1. Fetch all interns and their tasks from PostgreSQL
         const internsData = await User.findAll({
-            where: { role: 'intern' },
+            where: { role: ['intern', 'Trainee'] },
             include: [
                 { model: Intern, required: true, include: [{ model: User, as: 'Manager' }] },
                 { model: Task, required: false }
@@ -632,6 +668,145 @@ app.get('/api/export/interns', authToken, async (req, res) => {
     }
 });
 
+app.put('/api/interns/:id/promote', authToken, async (req, res) => {
+    try {
+        const user = await User.findByPk(req.params.id);
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        const internDetails = await Intern.findOne({ where: { intern_id: req.params.id } });
+        if (!internDetails) return res.status(404).json({ error: "Intern details not found" });
+
+        let newDesignation = 'Trainee';
+        if (internDetails.designation.includes('Full Stack')) {
+            newDesignation = 'Full Stack Developer Trainee';
+        } else if (internDetails.designation.includes('Android')) {
+            newDesignation = 'Android Developer Trainee';
+        }
+
+        user.role = 'Trainee'; 
+        await user.save(); 
+
+        await Intern.update(
+            { designation: newDesignation }, 
+            { where: { intern_id: req.params.id } }
+        );
+
+        await redisClient.del('all_interns_data');
+        
+        res.json({ message: `Intern successfully promoted to ${newDesignation}!` });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+
+// PASSWORD RESET: STEP 1 (Generate & Send OTP)
+app.post('/api/auth/forgot-password', limiter, validateRequest(forgotPasswordSchema), async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        // 1. Check if user exists in PostgreSQL
+        const user = await User.findOne({ where: { email } });
+        if (!user) {
+            // Security best practice: Even if the email doesn't exist, return a generic success message
+            // so attackers cannot use this endpoint to guess valid emails.
+            return res.status(200).json({ message: 'If that email exists, an OTP was sent.' });
+        }
+
+        // 2. Generate a secure 6-digit OTP
+        const otp = crypto.randomInt(100000, 999999).toString();
+
+        // 3. Save OTP in Redis with a 5-minute (300 seconds) expiration time
+        const redisKey = `otp_${email}`;
+        await redisClient.setEx(redisKey, 300, otp);
+
+        // 4. Send the email via Nodemailer  // Send immediately
+        /*  
+        const mailOptions = {
+            from: process.env.EMAIL_USER,
+            to: email,
+            subject: 'Password Reset OTP - KTT Intern Portal',
+            html: `<h3>Hello ${user.name},</h3>
+                   <p>Your password reset OTP is: <strong>${otp}</strong></p>
+                   <p>This code will expire in 5 minutes. If you did not request this, please ignore this email.</p>`
+        };
+        */
+
+        const emailJob = { 
+            type: 'password_reset',
+            email: user.email, 
+            name: user.name, 
+            otp: otp 
+        };
+
+        // Send immediately (or push to your RabbitMQ queue)
+        channel.sendToQueue('email_tasks', Buffer.from(JSON.stringify(emailJob))); // transporter.sendMail(mailOptions).catch(err => console.log('OTP Email failed:', err));
+
+        res.status(200).json({ message: 'If that email exists, an OTP was sent.' });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+// PASSWORD RESET: STEP 2 (Verify OTP & Update DB)
+app.post('/api/auth/reset-password', limiter, validateRequest(resetPasswordSchema), async (req, res) => {
+    try {
+        const { email, otp, newPassword } = req.body;
+
+        // 1. Check if the OTP exists in Redis for this email
+        const redisKey = `otp_${email}`;
+        const storedOtp = await redisClient.get(redisKey);
+
+        if (!storedOtp) {
+            return res.status(400).json({ message: 'OTP is invalid or has expired (5 minute limit).' });
+        }
+
+        if (storedOtp !== otp) {
+            return res.status(400).json({ message: 'Incorrect OTP.' });
+        }
+
+        // 2. Hash the new password
+        const hashedPass = await bcrypt.hash(newPassword, 10);
+
+        // 3. Update the password in PostgreSQL
+        await User.update(
+            { password: hashedPass },
+            { where: { email } }
+        );
+
+        // 4. Destroy the OTP in Redis so it cannot be reused
+        await redisClient.del(redisKey);
+
+        res.status(200).json({ message: 'Password reset successfully. You can now log in.' });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+app.put('/api/users/profile-pic', authToken, async (req, res) => {
+    try {
+        const { profile_pic } = req.body;
+        
+        // Update the profile picture for the currently logged-in user
+        await User.update(
+            { profile_pic }, 
+            { where: { user_id: req.user.user_id } }
+        );
+
+        // Clear Redis cache so dashboards get the updated picture
+        await redisClient.del('all_interns_data');
+
+        res.status(200).json({ message: "Profile picture updated successfully!", profile_pic });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // 1. Root route - sends login page
 app.get('/', (req, res) => {
     res.render('login'); 
@@ -656,7 +831,7 @@ app.get('/manager', authToken, (req, res) => {
 
 // 4. Protected Intern Route
 app.get('/intern', authToken, (req, res) => {
-    if (req.user.role !== 'intern') {
+    if (req.user.role !== 'intern' && req.user.role !== 'Trainee') {
         return res.status(403).redirect('/');
     }
     res.render('intern');

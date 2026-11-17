@@ -17,7 +17,8 @@ const createInternSchema = Joi.object({
 
 const assignTaskSchema = Joi.object({
     internEmail: Joi.string().required(),
-    title: Joi.string().min(2).required()
+    title: Joi.string().min(2).required(),
+    deadline: Joi.date().iso().required()
 });
 
 const updateScoreSchema = Joi.object({
@@ -35,13 +36,25 @@ const updateStatusSchema = Joi.object({
     status: Joi.string().valid('Pending', 'In Progress', 'Completed').required()
 });
 
+const forgotPasswordSchema = Joi.object({
+    email: Joi.string().required()
+});
+
+const resetPasswordSchema = Joi.object({
+    email: Joi.string().required(),
+    otp: Joi.string().length(6).required(),
+    newPassword: Joi.string().min(6).required() // Enforce a minimum password length
+});
+
 // The actual middleware function that intercepts the request
 const validateRequest = (schema) => {
     return (req, res, next) => {
         const { error } = schema.validate(req.body, { abortEarly: false });
+        console.log("Checking incoming request body:", req.body);
         
         if (error) {
             const errorMessage = error.details.map(detail => detail.message).join(', ');
+            console.log( `Validation Error: ${errorMessage}`)
             return res.status(400).json({ message: `Validation Error: ${errorMessage}` });
         }
         
@@ -55,5 +68,7 @@ module.exports = {
     assignTaskSchema,
     updateScoreSchema,
     updateStatusSchema,
+    forgotPasswordSchema,
+    resetPasswordSchema,
     validateRequest
 };

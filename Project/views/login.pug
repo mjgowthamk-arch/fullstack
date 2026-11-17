@@ -1,94 +1,175 @@
 doctype html
 html(lang="en")
-  head
-    meta(charset="UTF-8")
-    meta(name="viewport" content="width=device-width, initial-scale=1.0")
-    link(rel="icon" href="/login.png" type="image/png")
-    
-    script(src="https://code.jquery.com/jquery-3.7.1.min.js")
+    head
+        meta(charset="UTF-8")
+        meta(name="viewport" content="width=device-width, initial-scale=1.0")
+        link(rel="icon" href="/login.png" type="image/png")
 
-    title Login - KTT IMS
-    style.
-      * { box-sizing: border-box; }
-      body { font-family: Arial, sans-serif; background-color: whitesmoke; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-      .login-image img { width: 100%; height: 100%; display: block; object-fit: cover; }
-      .wrapper { display: flex; width: 900px; height: 600px; border-radius: 8px; overflow: hidden; }
-      .login-image { flex: 1; }
-      .login-form { flex: 1; background-color: #334155; color: white; padding: 40px 50px; display: flex; flex-direction: column; justify-content: center; }
-      .login-form h1 { text-align: center; margin: 0 0 10px 0; font-size: 30px; }
-      .login-form h2 { text-align: center; margin: 0 0 25px 0; font-size: 20px; font-weight: normal; color: #cbd5e1; }
-      .login-form label { display: block; font-size: 15px; margin-top: 10px; }
-      .login-form input, .login-form select { width: 100%; padding: 10px; margin-top: 6px; margin-bottom: 12px; border-radius: 5px; border: 1px solid #ccc; }
-      .login-btn { width: 100%; padding: 12px; margin-top: 20px; background-color: blue; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 15px; font-weight: bold; }
-      .login-btn:hover { background-color: #0056b3; transition: all 0.5s ease; }
+        script(src="https://code.jquery.com/jquery-3.7.1.min.js")
 
-  body
-    .wrapper
-      .login-image
-        img(src="/ims.png" alt="Team Work")
-      
-      .login-form
-        h1 KT Telematics Solutions
-        h2 Intern Management Portal
-        
-        form#loginForm
-          label(for="email") Email:
-          input#email(type="text" name="email" required autocomplete="username")
-          
-          label(for="password") Password:
-          input#password(type="password" name="password" required autocomplete="current-password")
-          
-          label(for="role") Role:
-          select#role(name="role" required)
-            option(value="") Select Role
-            option(value="admin") HR Admin
-            option(value="Manager 1") Manager 1
-            option(value="Manager 2") Manager 2
-            option(value="Intern") Intern
-          
-          button.login-btn(type="submit") Login
+        title Login - KTT IMS
+        style.
+            * { box-sizing: border-box; }
+            body { font-family: Arial, sans-serif; background-color: whitesmoke; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+            .login-image img { width: 100%; height: 100%; display: block; object-fit: cover; }
+            .wrapper { display: flex; width: 900px; height: 600px; border-radius: 8px; overflow: hidden; }
+            .login-image { flex: 1; }
+            .login-form { flex: 1; background-color: #334155; color: white; padding: 40px 50px; display: flex; flex-direction: column; justify-content: center; }
+            .login-form h1 { text-align: center; margin: 0 0 10px 0; font-size: 30px; }
+            .login-form h2 { text-align: center; margin: 0 0 25px 0; font-size: 20px; font-weight: normal; color: #cbd5e1; }
+            .login-form label { display: block; font-size: 15px; margin-top: 10px; }
+            .login-form input, .login-form select { width: 100%; padding: 10px; margin-top: 6px; margin-bottom: 12px; border-radius: 5px; border: 1px solid #ccc; }
+            .login-btn { width: 100%; padding: 12px; margin-top: 20px; background-color: blue; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 15px; font-weight: bold; }
+            .login-btn:hover { background-color: #0056b3; transition: all 0.5s ease; }
+            .link-text { display: block; text-align: center; margin-top: 15px; color: #cbd5e1; text-decoration: none; font-size: 14px; }
+            .link-text:hover { color: white; text-decoration: underline; }
 
-    script.
-      // Wait for the document to be ready (jQuery best practice)
-      $(document).ready(function() {
-          $('#loginForm').on('submit', function(e) {
-              e.preventDefault();
-              login();
-          });
-      });
+    body
+        .wrapper
+            .login-image
+                img(src="/ims.png" alt="Team Work")
 
-      async function login(){
-          // 1. Replaced document.getElementById with jQuery $('#id').val()
-          const email = $('#email').val().trim();
-          const password = $('#password').val().trim();
-          const role = $('#role').val().trim();
+            .login-form
+                h1 KT Telematics Solutions
+                h2#subtitle Intern Management Portal
 
-          let mappedRole = 'intern';
-          if (role === 'admin') mappedRole = 'admin';
-          else if (role === 'Manager 1' || role === 'Manager 2') mappedRole = 'manager';
-          else if (role === 'Intern') mappedRole = 'intern';
+                form#loginForm
+                    label(for="email") Email:
+                    input#email(type="text" name="email" required autocomplete="username")
 
-          try {
-              // 2. Replaced native fetch() with jQuery $.ajax()
-              const data = await $.ajax({
-                  url: '/login',
-                  method: 'POST',
-                  contentType: 'application/json',
-                  data: JSON.stringify({ email, password, role: mappedRole })
-              });
+                    label(for="password") Password:
+                    input#password(type="password" name="password" required autocomplete="current-password")
 
-              // jQuery automatically parses the JSON response on success
-              data.user.exactRole = role;
-              localStorage.setItem('currentUser', JSON.stringify(data.user));
-              window.location.href = `/${mappedRole}`; 
-              
-          } catch (err) {
-              console.error(err);
-              // jQuery attaches the backend response to err.responseJSON
-              if (err.responseJSON && err.responseJSON.message) {
-                  alert(err.responseJSON.message);
-              } else {
-                  alert('Server error. Could not connect to the backend.');
-              }
-          }
-      }
+                    label(for="role") Role:
+                    select#role(name="role" required)
+                        option(value="") Select Role
+                        option(value="admin") HR Admin
+                        option(value="Manager 1") Manager 1
+                        option(value="Manager 2") Manager 2
+                        option(value="Intern") Intern
+
+                    button.login-btn(type="submit") Login
+                    a.link-text(href="#" onclick="showForgotForm()") Forgot Password?
+
+                //- --- FORGOT PASSWORD FORM (Hidden by default) ---
+                form#forgotForm(style="display: none;")
+                    label(for="forgotEmail") Enter your registered Email:
+                    input#forgotEmail(type="email" required)
+
+                    button.login-btn(type="submit") Send OTP
+                    a.link-text(href="#" onclick="showLoginForm()") Back to Login
+
+                //- --- RESET PASSWORD FORM (Hidden by default) ---
+                form#resetForm(style="display: none;")
+                    label(for="resetEmail") Email:
+                    input#resetEmail(type="email" required readonly style="background-color: #475569; color: #94a3b8; cursor: not-allowed;")
+
+                    label(for="otpCode") Enter 6-digit OTP:
+                    input#otpCode(type="text" required pattern="[0-9]{6}" title="Please enter the 6 digit code")
+
+                    label(for="newPassword") New Password:
+                    input#newPassword(type="password" required)
+
+                    button.login-btn(type="submit") Reset Password
+
+        script.
+            $(document).ready(function() {
+                $('#loginForm').on('submit', function(e) {
+                    e.preventDefault();
+                    login();
+                });
+
+                $('#forgotForm').on('submit', function(e) {
+                    e.preventDefault();
+                    sendOtp();
+                });
+
+                $('#resetForm').on('submit', function(e) {
+                    e.preventDefault();
+                    resetPassword();
+                });
+            });
+
+            // UI Toggles
+            function showForgotForm() {
+                $('#loginForm, #resetForm').hide();
+                $('#subtitle').text("Forgot Password");
+                $('#forgotForm').fadeIn();
+            }
+
+            function showLoginForm() {
+                $('#forgotForm, #resetForm').hide();
+                $('#subtitle').text("Intern Management Portal");
+                $('#loginForm').fadeIn();
+            }
+
+            async function login() {
+                const email = $('#email').val().trim();
+                const password = $('#password').val().trim();
+                const role = $('#role').val().trim();
+
+                let mappedRole = 'intern';
+                if (role === 'admin') mappedRole = 'admin';
+                else if (role === 'Manager 1' || role === 'Manager 2') mappedRole = 'manager';
+
+                try {
+                    const data = await $.ajax({
+                        url: '/login',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({ email, password, role: mappedRole })
+                    });
+
+                    data.user.exactRole = role;
+                    localStorage.setItem('currentUser', JSON.stringify(data.user));
+                    window.location.href = `/${mappedRole}`; 
+                } catch (err) {
+                    if (err.responseJSON && err.responseJSON.message) {
+                        alert(err.responseJSON.message);
+                    } else {
+                        alert('Server error. Could not connect to the backend.');
+                    }
+                }
+            }
+
+            async function sendOtp() {
+                const email = $('#forgotEmail').val().trim();
+                try {
+                    const res = await $.ajax({
+                        url: '/api/auth/forgot-password',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({ email })
+                    });
+
+                    alert(res.message); 
+
+                    $('#forgotForm').hide();
+                    $('#subtitle').text("Enter OTP");
+                    $('#resetEmail').val(email);
+                    $('#resetForm').fadeIn();
+                } catch (err) {
+                    alert(err.responseJSON?.message || 'Error sending OTP');
+                }
+            }
+
+            async function resetPassword() {
+                const email = $('#resetEmail').val().trim();
+                const otp = $('#otpCode').val().trim();
+                const newPassword = $('#newPassword').val().trim();
+
+                try {
+                    const res = await $.ajax({
+                        url: '/api/auth/reset-password',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({ email, otp, newPassword })
+                    });
+
+                    alert(res.message); 
+                    $('#resetForm')[0].reset();
+                    showLoginForm(); 
+                } catch (err) {
+                    alert(err.responseJSON?.message || 'Error resetting password');
+                }
+            }
